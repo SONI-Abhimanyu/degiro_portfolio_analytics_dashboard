@@ -341,6 +341,31 @@ factor_exposure_controls = [
                  id='factor_exposure_factors_dropdown',
                  style=TEXT_STYLE)
 ]
+
+# Portfolio Construction (Weights / Turnover / Concentration)
+portfolio_construction_controls = [
+    html.P('Date Range:', style=TEXT_STYLE),
+    dcc.DatePickerRange(
+        id='portfolio_construction_date_picker',
+        min_date_allowed=start_date_monthly,
+        max_date_allowed=end_date_monthly,
+        initial_visible_month=end_date_monthly,
+        display_format='YYYY-MM-DD',
+        start_date=start_date_monthly,
+        end_date=end_date_monthly,
+        style=TEXT_STYLE
+    ),
+    html.Br(),
+    html.Br(),
+    html.P('Frequency:', style=TEXT_STYLE),
+    dcc.Dropdown(options=[{'label': FREQUENCY_TO_LABEL[key], 'value': key}
+                          for key in ('1M', '1D')],
+                 placeholder='Frequency...',
+                 value='1M',
+                 multi=False,
+                 id='portfolio_construction_frequency_dropdown',
+                 style=TEXT_STYLE),
+]
 app.layout = dbc.Container(
     fluid=True,
     children=[
@@ -530,6 +555,35 @@ app.layout = dbc.Container(
                 ]),
                 dbc.Row(html.Br())
             ], label='Factor Loadings'),
+            dbc.Tab([
+                dbc.Row([html.Br()]),
+                dbc.Card(
+                    dbc.Row(id='portfolio_construction_summary_table'),
+                    body=True, style={'height': '100%', 'overflow': 'scroll'}
+                ),
+                dbc.Row([html.Br()]),
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Card(portfolio_construction_controls, body=True, style={'height': '100%'})
+                    ], width=3),
+                    dbc.Col([
+                        dbc.Card(dcc.Graph(id='portfolio_construction_weights_graph'),
+                                 body=True, style={'height': '100%'})
+                    ], width=9),
+                ]),
+                dbc.Row([html.Br()]),
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Card(dcc.Graph(id='portfolio_construction_turnover_graph'),
+                                 body=True, style={'height': '100%'})
+                    ], width=6),
+                    dbc.Col([
+                        dbc.Card(dcc.Graph(id='portfolio_construction_concentration_graph'),
+                                 body=True, style={'height': '100%'})
+                    ], width=6),
+                ]),
+                dbc.Row(html.Br())
+            ], label='Portfolio Construction'),
         ])
     ]
 )
@@ -846,6 +900,93 @@ def factor_exposure(dependent_variable_name: str, factor_names: str):
                                          title=f'{dependent_variable_name} - Factor Contributions to Risk')
 
     return table, fig_0, fig_1, fig_2
+
+
+@app.callback(
+    [Output('portfolio_construction_summary_table', 'children'),
+     Output('portfolio_construction_weights_graph', 'figure'),
+     Output('portfolio_construction_turnover_graph', 'figure'),
+     Output('portfolio_construction_concentration_graph', 'figure')],
+    [Input('portfolio_construction_date_picker', 'start_date'),
+     Input('portfolio_construction_date_picker', 'end_date'),
+     Input('portfolio_construction_frequency_dropdown', 'value')]
+)
+def portfolio_construction(s_date: str, e_date: str, frequency: str):
+    # NAV -> weights
+    nav_df = db.load_portfolio_asset_nav(groupby_field='name', frequency=frequency).loc[s_date:e_date]
+    weights_df = pa.weights_from_nav(nav_df)
+
+    # Turnover (simple proxy)
+    turnover = pa.turnover_simple(weights_df)
+
+    # Concentration
+    hhi = pa.herfindahl_hirschman_index(weights_df)
+    neff = pa.effective_n(weights_df)
+
+    # Summary table
+    latest_date = weights_df.index.max()
+    w_last = weights_df.loc[latest_date].sort_values(ascending=False)
+    top_5 = w_last.head(5)
+
+    summary = pd.DataFrame({
+        'Metric': [
+            'Last date',
+            'HHI (last)',
+            'Effective N (last)',
+            'Turnover (avg, L12 obs)',
+            'Turnover (avg, ITD)',
+            'Max weight (last)',
+            'Top-5 weight (last)',
+        ],
+        'Value': [
+            latest_date.strftime(constants.DATE_FORMAT) if hasattr(latest_date, 'strftime') else str(latest_date),
+            float(hhi.loc[latest_date]),
+            float(neff.loc[latest_date]),
+            float(turnover.tail(12).mean()) if turnover.shape[0] > 0 else np.nan,
+            float(turnover.mean()) if turnover.shape[0] > 0 else np.nan,
+            float(w_last.max()) if w_last.shape[0] > 0 else np.nan,
+            float(top_5.sum()) if top_5.shape[0] > 0 else np.nan,
+        ]
+    })
+
+    # Formatting
+    def _fmt(v, kind):
+        if pd.isna(v):
+            return '-'
+        if kind == 'pct':
+            return numeric_to_percentage_str_format(v)
+        if kind == 'float':
+            return numeric_to_float_str_format(v, precision=3)
+        return str(v)
+
+    summary['Value'] = summary.apply(
+        lambda row: _fmt(row['Value'], 'pct' if row['Metric'] in
+                         {'Max weight (last)', 'Top-5 weight (last)'} else
+                         ('float' if row['Metric'] in
+                          {'HHI (last)', 'Effective N (last)',
+                           'Turnover (avg, L12 obs)', 'Turnover (avg, ITD)'} else 'str')),
+        axis=1
+    )
+
+    table = dbc.Table.from_dataframe(
+        summary,
+        striped=True,
+        bordered=True,
+        hover=True,
+        responsive='sm',
+        style={'textAlign': 'left', 'position': 'sticky', 'white-space': 'nowrap', 'font-size': 'small',
+               'font-family': 'Segoe UI'}
+    )
+
+    # Figures
+    weights_fig = pa.stacked_area_weights_plot(weights_df, title='Portfolio Weights (NAV-based)')
+    turnover_fig = pa.time_series_plot(pd.DataFrame(turnover).loc[s_date:e_date], yaxis_tick_format='.1%',
+                                       title='Turnover (simple proxy)')
+    concentration_df = pd.DataFrame({'HHI': hhi, 'Effective N': neff}).loc[s_date:e_date]
+    concentration_fig = pa.time_series_plot(concentration_df, yaxis_tick_format=',.2f',
+                                            title='Concentration (HHI) and Effective N')
+
+    return table, weights_fig, turnover_fig, concentration_fig
 
 
 if __name__ == '__main__':
