@@ -7,8 +7,134 @@ import pandas as pd
 import scipy.stats
 import statsmodels.api as sm
 from statsmodels.regression.rolling import RollingOLS
+import math
 
 ROLLING_FACTOR = 36
+
+# =========================
+# Portfolio construction / risk model helpers
+# =========================
+
+
+def weights_from_nav(nav_df: pd.DataFrame, dropna: bool = True) -> pd.DataFrame:
+    """
+    Convert a (date x asset) NAV dataframe into weights that sum to 1 at each date.
+
+    Notes:
+    - This treats missing assets as 0 NAV.
+    - If a row sums to 0 (e.g., empty portfolio), weights are NaN for that row.
+    """
+    nav_df = pd.DataFrame(nav_df).copy(deep=True)
+    nav_df = nav_df.replace([np.inf, -np.inf], np.nan)
+    nav_df = nav_df.fillna(0.0)
+
+    totals = nav_df.sum(axis=1).replace(0.0, np.nan)
+    w = nav_df.div(totals, axis=0)
+    if dropna:
+        w = w.dropna(how="all")
+    return w
+
+
+def turnover_simple(weights_df: pd.DataFrame, periods_per_year: int = 12) -> pd.Series:
+    """
+    Simple one-way turnover approximation from end-of-period weights:
+
+        TO_t = 0.5 * sum_i | w_{t,i} - w_{t-1,i} |
+
+    This is widely used as a quick proxy when you don't have full holdings/trade data.
+
+    Returns a time series of turnover per period (same frequency as weights_df).
+    """
+    w = pd.DataFrame(weights_df).copy(deep=True).dropna(how="all")
+    w = w.fillna(0.0)
+    to = 0.5 * (w.diff().abs().sum(axis=1))
+    to.name = "Turnover"
+    return to.dropna()
+
+
+def herfindahl_hirschman_index(weights_df: pd.DataFrame) -> pd.Series:
+    """
+    HHI concentration index: HHI_t = sum_i w_{t,i}^2.
+    """
+    w = pd.DataFrame(weights_df).copy(deep=True).dropna(how="all").fillna(0.0)
+    hhi = (w ** 2).sum(axis=1)
+    hhi.name = "HHI"
+    return hhi
+
+
+def effective_n(weights_df: pd.DataFrame) -> pd.Series:
+    """
+    Effective number of holdings: N_eff = 1 / HHI.
+    """
+    hhi = herfindahl_hirschman_index(weights_df)
+    neff = 1.0 / hhi.replace(0.0, np.nan)
+    neff.name = "Effective N"
+    return neff
+
+
+def ewma_cov(returns_df: pd.DataFrame, lam: float = 0.94, min_periods: int = 36) -> pd.DataFrame:
+    """
+    Exponentially-weighted covariance matrix (RiskMetrics-style).
+
+    - lam: decay factor (0<lam<1). Common monthly value ~0.94; daily ~0.97-0.99.
+    - min_periods: minimum rows required after dropping NaNs.
+    """
+    assert 0.0 < lam < 1.0, "lam must be in (0,1)"
+    r = pd.DataFrame(returns_df).copy(deep=True)
+    r = r.replace([np.inf, -np.inf], np.nan).dropna(how="any")
+    if r.shape[0] < min_periods:
+        raise ValueError(f"Not enough observations for EWMA cov (need {min_periods}, have {r.shape[0]}).")
+
+    x = r.to_numpy()
+    x = x - x.mean(axis=0, keepdims=True)
+    n = x.shape[0]
+
+    # Oldest -> newest weights, normalized to sum to 1
+    w = np.array([(1.0 - lam) * (lam ** (n - 1 - t)) for t in range(n)], dtype=float)
+    w = w / w.sum()
+
+    xw = x * np.sqrt(w[:, None])
+    cov = xw.T @ xw
+    return pd.DataFrame(cov, index=r.columns, columns=r.columns)
+
+
+def portfolio_vol_from_cov(weights: np.ndarray, cov: pd.DataFrame) -> float:
+    """
+    Portfolio volatility from covariance matrix (per-period, not annualized):
+        vol = sqrt(w' Σ w)
+    """
+    w = np.asarray(weights, dtype=float).reshape(-1, 1)
+    s = np.asarray(cov, dtype=float)
+    return float(np.sqrt((w.T @ s @ w).squeeze()))
+
+
+def risk_contributions_vol(weights: np.ndarray, cov: pd.DataFrame, normalize: bool = False) -> pd.Series:
+    """
+    Volatility risk contributions under covariance model.
+
+    For vol = sqrt(w'Σw), the component contribution is:
+        RC_i = w_i * ( (Σw)_i / vol )
+
+    If normalize=True, returns RC_i / sum(RC_i) (sums to 1).
+    """
+    cov_df = pd.DataFrame(cov).copy(deep=True)
+    assets = cov_df.columns
+    w = np.asarray(weights, dtype=float).reshape(-1)
+    if len(w) != len(assets):
+        raise ValueError("weights length must match covariance dimension")
+
+    sigma_w = cov_df.to_numpy() @ w
+    vol = portfolio_vol_from_cov(w, cov_df)
+    if vol == 0.0 or np.isnan(vol):
+        out = pd.Series(np.nan, index=assets, name="Vol RC")
+        return out
+
+    rc = w * (sigma_w / vol)
+    rc = pd.Series(rc, index=assets, name="Vol RC")
+    if normalize:
+        rc = rc / rc.sum()
+        rc.name = "Vol RC (pct)"
+    return rc
 
 
 def performance_stats(return_series: pd.Series, risk_free_rate: pd.Series = None, periods_per_year=12,
@@ -679,8 +805,7 @@ def annualize_returns(return_series: pd.Series, periods_per_year: int = 12, drop
     return_series.dropna(inplace=True)
 
     compounded_growth = (1 + return_series).prod().squeeze()
-    annualized_returns = np.math.pow(
-        compounded_growth, (periods_per_year / n_periods)) - 1
+    annualized_returns = math.pow(compounded_growth, (periods_per_year / n_periods)) - 1
     return annualized_returns  # Base Case
 
 
@@ -719,7 +844,7 @@ def annualize_vol(return_series: pd.Series, periods_per_year: int = 12, dropna: 
     if (not dropna) and (return_series.isna().sum().squeeze() > 0):
         return np.nan
     return_series.dropna(inplace=True)
-    annualized_vol = return_series.std() * (np.math.sqrt(periods_per_year))
+    annualized_vol = return_series.std() * (math.sqrt(periods_per_year))
     return annualized_vol.squeeze()
 
 
@@ -763,7 +888,7 @@ def sharpe_ratio(return_series: pd.Series, riskfree_rate: pd.Series, periods_per
     excess_return_series = pd.DataFrame(return_series).sub(
         riskfree_rate.values, axis=0)
     sharpe_ratio_float = excess_return_series.mean() / excess_return_series.std()
-    annualized_sharpe_ratio = np.math.sqrt(periods_per_year) * sharpe_ratio_float
+    annualized_sharpe_ratio = math.sqrt(periods_per_year) * sharpe_ratio_float
 
     return annualized_sharpe_ratio.squeeze()
 
@@ -1268,8 +1393,7 @@ def downside_deviation(return_series: pd.Series, risk_free_rate: pd.Series = Non
     # Remove positive excess returns
     excess_returns[excess_returns > 0] = 0
     sum_of_squares = np.power(excess_returns, 2).sum()
-    dd = np.math.sqrt(sum_of_squares / (n_periods - 1)) * \
-         np.math.sqrt(periods_per_year)
+    dd = math.sqrt(sum_of_squares / (n_periods - 1)) * math.sqrt(periods_per_year)
     return dd
 
 
@@ -1324,8 +1448,7 @@ def upside_deviation(return_series: pd.Series, risk_free_rate: pd.Series = None,
 
     excess_returns[excess_returns < 0] = 0  # Remove negative excess returns
     sum_of_squares = np.power(excess_returns, 2).sum()
-    ud = np.math.sqrt(sum_of_squares / (n_periods - 1)) * \
-         np.math.sqrt(periods_per_year)
+    ud = math.sqrt(sum_of_squares / (n_periods - 1)) * math.sqrt(periods_per_year)
     return ud
 
 

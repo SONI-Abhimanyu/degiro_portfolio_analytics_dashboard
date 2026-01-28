@@ -130,6 +130,25 @@ def area_plot(df: pd.DataFrame, x: str, y: str, color: str, line_group: str = No
     return fig
 
 
+def stacked_area_weights_plot(weights_df: pd.DataFrame, title: str = "Portfolio Weights", showlegend: bool = True):
+    """
+    Convenience plot for a weights dataframe (date x asset) as a stacked area chart.
+    """
+    w = pd.DataFrame(weights_df).copy(deep=True).dropna(how="all")
+    w = w.fillna(0.0)
+    long_df = w.melt(ignore_index=False, var_name="Asset", value_name="Weight").reset_index(drop=False)
+    fig = px.area(long_df, x="date", y="Weight", color="Asset", color_discrete_sequence=list(COLORS.values()))
+    fig.update_layout(
+        hovermode="x unified",
+        xaxis=dict(title=None, zeroline=False),
+        yaxis=dict(title=None, tickformat=".1%", zeroline=False, range=[0, 1]),
+        legend=dict(title=None, xanchor="center", x=0.5, orientation="h"),
+        template=PLOTLY_TEMPLATE,
+        showlegend=showlegend,
+        title=title,
+    )
+    return fig
+
 def pie_chart(series: pd.Series, percentage: bool = True, title: str = None, show_legend: bool = True,
               sort: bool = False, hovertemplate_tick_format: str = ',.1f', percentage_precision: int = 1):
     """Plots a Pie chart of a pandas series.
