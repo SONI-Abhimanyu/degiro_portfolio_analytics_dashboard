@@ -32,6 +32,9 @@ Is this repository for you?
 
 <code>pip install -r requirements.txt</code>
 
+#### Python version note
+This project now targets **modern Python** (your environment shows Python 3.14). If you use an older Python, you may need to downgrade the package versions accordingly.
+
 3. Run the data update/download:
 
 <code>python src/run_update.py</code>
@@ -68,6 +71,10 @@ real data coming from your account, please rename the 'data_example' folder into
 ![](./dashboard_snapshots/Risk(2).PNG)
 ### Factor Loadings:
 ![](./dashboard_snapshots/FactorLoadings.PNG)
+### Portfolio Construction (new):
+- **Weights**: NAV-based portfolio weights over time (stacked area).
+- **Turnover**: simple turnover proxy \(0.5\sum_i |w_{t,i} - w_{t-1,i}|\) from end-of-period weights.
+- **Concentration**: HHI \(\sum_i w_i^2\) and Effective N \(1/\text{HHI}\).
 
 ## Disclaimer
 I have no affiliation with DEGIRO. This is an unofficial portfolio analytics tool which I personally build to enhance my user experience with the platform and have better control of my finances. I hope many others will find it useful too.

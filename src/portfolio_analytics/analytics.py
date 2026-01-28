@@ -7,6 +7,7 @@ import pandas as pd
 import scipy.stats
 import statsmodels.api as sm
 from statsmodels.regression.rolling import RollingOLS
+import math
 
 ROLLING_FACTOR = 36
 
@@ -804,8 +805,7 @@ def annualize_returns(return_series: pd.Series, periods_per_year: int = 12, drop
     return_series.dropna(inplace=True)
 
     compounded_growth = (1 + return_series).prod().squeeze()
-    annualized_returns = np.math.pow(
-        compounded_growth, (periods_per_year / n_periods)) - 1
+    annualized_returns = math.pow(compounded_growth, (periods_per_year / n_periods)) - 1
     return annualized_returns  # Base Case
 
 
@@ -844,7 +844,7 @@ def annualize_vol(return_series: pd.Series, periods_per_year: int = 12, dropna: 
     if (not dropna) and (return_series.isna().sum().squeeze() > 0):
         return np.nan
     return_series.dropna(inplace=True)
-    annualized_vol = return_series.std() * (np.math.sqrt(periods_per_year))
+    annualized_vol = return_series.std() * (math.sqrt(periods_per_year))
     return annualized_vol.squeeze()
 
 
@@ -888,7 +888,7 @@ def sharpe_ratio(return_series: pd.Series, riskfree_rate: pd.Series, periods_per
     excess_return_series = pd.DataFrame(return_series).sub(
         riskfree_rate.values, axis=0)
     sharpe_ratio_float = excess_return_series.mean() / excess_return_series.std()
-    annualized_sharpe_ratio = np.math.sqrt(periods_per_year) * sharpe_ratio_float
+    annualized_sharpe_ratio = math.sqrt(periods_per_year) * sharpe_ratio_float
 
     return annualized_sharpe_ratio.squeeze()
 
@@ -1393,8 +1393,7 @@ def downside_deviation(return_series: pd.Series, risk_free_rate: pd.Series = Non
     # Remove positive excess returns
     excess_returns[excess_returns > 0] = 0
     sum_of_squares = np.power(excess_returns, 2).sum()
-    dd = np.math.sqrt(sum_of_squares / (n_periods - 1)) * \
-         np.math.sqrt(periods_per_year)
+    dd = math.sqrt(sum_of_squares / (n_periods - 1)) * math.sqrt(periods_per_year)
     return dd
 
 
@@ -1449,8 +1448,7 @@ def upside_deviation(return_series: pd.Series, risk_free_rate: pd.Series = None,
 
     excess_returns[excess_returns < 0] = 0  # Remove negative excess returns
     sum_of_squares = np.power(excess_returns, 2).sum()
-    ud = np.math.sqrt(sum_of_squares / (n_periods - 1)) * \
-         np.math.sqrt(periods_per_year)
+    ud = math.sqrt(sum_of_squares / (n_periods - 1)) * math.sqrt(periods_per_year)
     return ud
 
 

@@ -990,4 +990,5 @@ def portfolio_construction(s_date: str, e_date: str, frequency: str):
 
 
 if __name__ == '__main__':
-    app.run_server(debug=False)
+    # Dash>=3: run_server was replaced by run
+    app.run(debug=False)
